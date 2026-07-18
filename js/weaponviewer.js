@@ -51,6 +51,23 @@ fetch(Prefix+'src/data/keychains.json')
 .then(response => response.json())
 .then(keychains => keychainslist = keychains);
 
+let stickerRarity = null, keychainRarity = null;
+fetch(Prefix+'src/data/rarity_stickers.json')
+.then(response => response.json())
+.then(data => stickerRarity = data);
+fetch(Prefix+'src/data/rarity_keychains.json')
+.then(response => response.json())
+.then(data => keychainRarity = data);
+
+function GetRarityBorderColor(name) {
+    const map = viewlistcurrent == 'stickers' ? stickerRarity : keychainRarity;
+    if(!map) {return '#4b69ff';}
+
+    const prefix = viewlistcurrent == 'stickers' ? 'Sticker | ' : 'Charm | ';
+    const clean = name.replace(prefix, '').trim().toLowerCase();
+    return map[clean] || '#4b69ff';
+}
+
 /////////////
 // Buttons //
 /////////////
@@ -951,7 +968,7 @@ function GetHTMLTemplate(list = [], id) {
 
         html += `
         <li>
-            <button class="card ${id==elem.id?'selected':''}" data-action="viewlist_choose" data-id="${elem.id}">
+            <button class="card ${id==elem.id?'selected':''}" style="background: linear-gradient(135deg, ${GetRarityBorderColor(elem.name)}cc 0%, rgba(0,0,0,0.5) 75%);" data-action="viewlist_choose" data-id="${elem.id}">
                 <div class="imgbox">
                     <img src="${elem.image}">
                 </div>

@@ -1,5 +1,49 @@
 <?php
 
+$rarity_map = json_decode(file_get_contents('src/data/rarity.json'), true);
+$keychain_rarity_map = json_decode(file_get_contents('src/data/rarity_keychains.json'), true);
+$sticker_rarity_map = json_decode(file_get_contents('src/data/rarity_stickers.json'), true);
+
+$rarity_order = [
+    'Consumer Grade' => 1,
+    'Industrial Grade' => 2,
+    'Mil-Spec Grade' => 3,
+    'Restricted' => 4,
+    'Classified' => 5,
+    'Covert' => 6,
+    'Extraordinary' => 7,
+    'Contraband' => 8
+];
+
+function GetRarityColor($paint) {
+    global $rarity_map;
+    $key = (string)$paint;
+    return $rarity_map[$key]['color'] ?? '#4b69ff';
+}
+
+function GetRarityRank($paint) {
+    global $rarity_map, $rarity_order;
+    $key = (string)$paint;
+    $name = $rarity_map[$key]['name'] ?? null;
+    return $rarity_order[$name] ?? 0;
+}
+
+function GetGoldRarityColor() {
+    return '#e4c441'; // Extraordinary gold - used for knives and gloves
+}
+
+function GetKeychainRarityColor($name) {
+    global $keychain_rarity_map;
+    $clean = strtolower(trim(str_replace('Charm | ', '', $name)));
+    return $keychain_rarity_map[$clean] ?? '#4b69ff';
+}
+
+function GetStickerRarityColor($name) {
+    global $sticker_rarity_map;
+    $clean = strtolower(trim(str_replace('Sticker | ', '', $name)));
+    return $sticker_rarity_map[$clean] ?? '#4b69ff';
+}
+
 if(!function_exists("Path")) {
     return;
 }
@@ -189,7 +233,8 @@ switch($selectedweapon_type) {
         break;
     default:
         foreach($full_skins as $skin) {
-            if($skin->weapon_name != $selectedweapon || $skin->paint != 0) {continue;}
+            if($skin->weapon_name != $selectedweapon) {continue;}
+            if($skin->paint != 0 && $skin->paint !== 'default') {continue;}
 
             $current_t = $skin;
             break;
@@ -288,6 +333,17 @@ switch($selectedweapon_type) {
         </nav>
         <div class="skins">
             <h3><?= $translations->skins->selected_weapon->select_skin_label; ?></h3>
+            <input type="text" id="skinSearchBox" placeholder="Search..." style="width:100%;padding:8px 12px;margin-bottom:12px;border-radius:6px;border:1px solid #444;background:rgba(255,255,255,0.1);color:#fff;">
+            <script>
+                document.getElementById('skinSearchBox').addEventListener('input', function(e) {
+                    const term = e.target.value.trim().toLowerCase();
+                    document.querySelectorAll('.skins ul > li').forEach(function(li) {
+                        const label = li.querySelector('span');
+                        const text = label ? label.textContent.toLowerCase() : '';
+                        li.style.display = (!term || text.includes(term)) ? '' : 'none';
+                    });
+                });
+            </script>
             <ul>
                 <?php
                 switch($selectedweapon_type) {
@@ -296,7 +352,7 @@ switch($selectedweapon_type) {
                             if($glove->weapon_defindex != $selectedweapon) {continue;}
                             ?>
                             <li>
-                                <button class='card <?= $saved_t['weapon_defindex'] == $glove->weapon_defindex && $current_t->paint == $glove->paint || $saved_ct['weapon_defindex'] == $glove->weapon_defindex && $current_ct->paint == $glove->paint?'selected':''; ?>' data-action='weapon_change' data-weapon='<?= $selectedweapon; ?>' data-defindex='<?= $glove->weapon_defindex; ?>' data-paint='<?= $glove->paint == '0' ?'default':$glove->paint; ?>'>
+                                <button class='card <?= $saved_t['weapon_defindex'] == $glove->weapon_defindex && $current_t->paint == $glove->paint || $saved_ct['weapon_defindex'] == $glove->weapon_defindex && $current_ct->paint == $glove->paint?'selected':''; ?>' style='background: linear-gradient(135deg, <?= GetGoldRarityColor(); ?>cc 0%, rgba(0,0,0,0.5) 75%);' data-action='weapon_change' data-weapon='<?= $selectedweapon; ?>' data-defindex='<?= $glove->weapon_defindex; ?>' data-paint='<?= $glove->paint == '0' ?'default':$glove->paint; ?>'>
                                     <div class="imgbox">
                                         <img src='<?= $glove->image; ?>' loading='lazy'>
                                     </div>
@@ -364,9 +420,17 @@ switch($selectedweapon_type) {
                         }
                         break;
                     default:
-                        foreach($full_skins as $skin) {
-                            if($skin->weapon_name != $selectedweapon) {continue;}
+                        $matching_skins = array_filter($full_skins, function($skin) use ($selectedweapon) {
+                            return $skin->weapon_name == $selectedweapon;
+                        });
 
+                        if(!$is_knife) {
+                            usort($matching_skins, function($a, $b) {
+                                return GetRarityRank($b->paint) <=> GetRarityRank($a->paint);
+                            });
+                        }
+
+                        foreach($matching_skins as $skin) {
                             $selected = false;
                             if($is_knife) {
                                 if($knife_t && $current_t && $knife_t['knife'] == $skin->weapon_name && $current_t->paint == $skin->paint || $knife_ct && $current_ct && $knife_ct['knife'] == $skin->weapon_name && $current_ct->paint == $skin->paint) {
@@ -381,7 +445,7 @@ switch($selectedweapon_type) {
                             }
                             ?>
                             <li>
-                                <button class='card <?= $selected?'selected':''; ?>' data-action='weapon_change' data-weapon='<?= $skin->weapon_name; ?>' data-defindex='<?= $skin->weapon_defindex; ?>' data-paint='<?= $skin->paint == '0' ?'default':$skin->paint; ?>'>
+                                <button class='card <?= $selected?'selected':''; ?>' style='background: linear-gradient(135deg, <?= $is_knife ? GetGoldRarityColor() : GetRarityColor($skin->paint); ?>cc 0%, rgba(0,0,0,0.5) 75%);' data-action='weapon_change' data-weapon='<?= $skin->weapon_name; ?>' data-defindex='<?= $skin->weapon_defindex; ?>' data-paint='<?= $skin->paint == '0' ?'default':$skin->paint; ?>'>
                                     <div class="imgbox">
                                         <img src='<?= $skin->image; ?>' alt='<?= $skin->weapon_name; ?>' loading='lazy'>
                                     </div>
