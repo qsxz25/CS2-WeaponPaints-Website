@@ -2,6 +2,8 @@
 # FORK OF THE LielXD's WEBSITE FOR WeaponPaints PLUGIN
 -------
 
+# ATTENTION! REGENERATION MIGHT TAKE SOME TIME (couple minutes), SINCE IT MAKES THOUSANDS OF LIVE HTTP CHECKS
+
 ## What was added/changed/fixed:
 - Rarity based coloring (Knives and gloves forced to gold color)
 - Search bar
