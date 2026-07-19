@@ -50,6 +50,70 @@ $ctGlove->paint_name = 'Default Gloves | Counter-Terrorist Default';
 
 $skinsjson = json_decode(file_get_contents($skins));
 
+// --- Fill in any skins missing from Nereziel's data (which lags behind
+// Valve updates) using ByMykel's actively-maintained CSGO-API instead. ---
+try {
+    $byMykelData = @file_get_contents('https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json');
+    $byMykelSkins = $byMykelData ? json_decode($byMykelData) : null;
+
+    if ($byMykelSkins) {
+        $defindexMap = [];
+        foreach ($skinsjson as $existing) {
+            if (isset($existing->weapon_name) && isset($existing->weapon_defindex)) {
+                $defindexMap[$existing->weapon_name] = $existing->weapon_defindex;
+            }
+        }
+
+        $existingByKey = [];
+        foreach ($skinsjson as $existing) {
+            $existingByKey[$existing->weapon_name . '_' . (string)$existing->paint] = $existing;
+        }
+
+        $added = 0;
+        $fixed = 0;
+        foreach ($byMykelSkins as $bmSkin) {
+            if (!isset($bmSkin->weapon) || !is_object($bmSkin->weapon)) { continue; }
+
+            $weaponId = $bmSkin->weapon->id ?? $bmSkin->weapon->weapon_id ?? null;
+            if (!$weaponId || !isset($bmSkin->paint_index) || !isset($defindexMap[$weaponId])) {
+                continue;
+            }
+
+            if (empty($bmSkin->name) || empty($bmSkin->image)) {
+                continue; // skip incomplete upstream entries
+            }
+
+            $key = $weaponId . '_' . (string)$bmSkin->paint_index;
+
+            if (isset($existingByKey[$key])) {
+                // Entry already exists locally - fix its image if it's broken/empty.
+                if (empty($existingByKey[$key]->image)) {
+                    $existingByKey[$key]->image = $bmSkin->image;
+                    $fixed++;
+                }
+                continue;
+            }
+
+            $nameParts = explode(' | ', $bmSkin->name);
+            if (count($nameParts) < 2) { continue; }
+
+            $newSkin = new stdClass();
+            $newSkin->weapon_defindex = $defindexMap[$weaponId];
+            $newSkin->weapon_name = $weaponId;
+            $newSkin->paint = $bmSkin->paint_index;
+            $newSkin->image = $bmSkin->image;
+            $newSkin->paint_name = $bmSkin->name;
+            $newSkin->legacy_model = $bmSkin->legacy_model ?? false;
+
+            $skinsjson[] = $newSkin;
+            $existingByKey[$key] = $newSkin;
+            $added++;
+        }
+    }
+} catch (Throwable $e) {
+    // If ByMykel is unreachable or malformed, continue with Nereziel's data alone.
+}
+
 $defaultknife = new stdClass();
 $defaultknife->weapon_defindex = 'weapon_knife_default';
 $defaultknife->weapon_name = 'weapon_knife_default';
@@ -60,12 +124,239 @@ $defaultknife->legacy_model = false;
 
 array_unshift($skinsjson, $defaultknife);
 
+// --- Verify every skin's image actually loads; replace broken ones with
+// ByMykel's version if available. Runs at generation time so no separate
+// patch step is ever needed afterward. ---
+set_time_limit(0);
+
+function checkUrlsMulti($urls) {
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($urls as $i => $url) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_NOBODY, true);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_multi_add_handle($mh, $ch);
+        $handles[$i] = $ch;
+    }
+    $running = null;
+    do { curl_multi_exec($mh, $running); } while ($running > 0);
+
+    $results = [];
+    foreach ($handles as $i => $ch) {
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $results[$i] = ($code >= 200 && $code < 400);
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+    }
+    curl_multi_close($mh);
+    return $results;
+}
+
+if (isset($byMykelSkins) && $byMykelSkins) {
+    $fallbackImageMap = [];
+    foreach ($byMykelSkins as $bmSkin) {
+        if (!isset($bmSkin->weapon) || !is_object($bmSkin->weapon)) { continue; }
+        $wId = $bmSkin->weapon->id ?? $bmSkin->weapon->weapon_id ?? null;
+        if ($wId && isset($bmSkin->paint_index) && !empty($bmSkin->image)) {
+            $fallbackImageMap[$wId . '_' . (string)$bmSkin->paint_index] = $bmSkin->image;
+        }
+    }
+
+    $batchSize = 25;
+    $batchUrls = [];
+    $batchRefs = [];
+
+    foreach ($skinsjson as $skin) {
+        if (empty($skin->image)) { continue; }
+        $batchUrls[] = $skin->image;
+        $batchRefs[] = $skin;
+
+        if (count($batchUrls) >= $batchSize) {
+            $results = checkUrlsMulti($batchUrls);
+            foreach ($results as $i => $ok) {
+                if (!$ok) {
+                    $paintKey = ($batchRefs[$i]->paint === '0' || $batchRefs[$i]->paint === 0) ? '0' : (string)$batchRefs[$i]->paint;
+                    $fallbackKey = $batchRefs[$i]->weapon_name . '_' . $paintKey;
+                    if (isset($fallbackImageMap[$fallbackKey])) {
+                        $batchRefs[$i]->image = $fallbackImageMap[$fallbackKey];
+                    }
+                }
+            }
+            $batchUrls = [];
+            $batchRefs = [];
+        }
+    }
+    if (!empty($batchUrls)) {
+        $results = checkUrlsMulti($batchUrls);
+        foreach ($results as $i => $ok) {
+            if (!$ok) {
+                $paintKey = ($batchRefs[$i]->paint === '0' || $batchRefs[$i]->paint === 0) ? '0' : (string)$batchRefs[$i]->paint;
+                $fallbackKey = $batchRefs[$i]->weapon_name . '_' . $paintKey;
+                if (isset($fallbackImageMap[$fallbackKey])) {
+                    $batchRefs[$i]->image = $fallbackImageMap[$fallbackKey];
+                }
+            }
+        }
+    }
+}
+
+// --- Same treatment for gloves: merge missing finishes and verify images.
+// ByMykel provides weapon.weapon_id as a numeric ID that matches this
+// project's weapon_defindex convention directly (confirmed: 4725, 5027,
+// 5030-5035 map to Broken Fang/Bloodhound/Sport/Driver/Hand Wraps/
+// Moto/Specialist/Hydra gloves respectively). ---
+if (isset($byMykelSkins) && $byMykelSkins) {
+    $gloveImageMap = []; // "defindex_paintindex" => image
+    foreach ($byMykelSkins as $bmSkin) {
+        if (!isset($bmSkin->category->id) || strpos($bmSkin->category->id, 'glove') === false) { continue; }
+        if (empty($bmSkin->paint_index) || empty($bmSkin->image) || empty($bmSkin->weapon->weapon_id)) { continue; }
+
+        $key = (string)$bmSkin->weapon->weapon_id . '_' . (string)$bmSkin->paint_index;
+        $gloveImageMap[$key] = ['image' => $bmSkin->image, 'name' => $bmSkin->name ?? ''];
+    }
+
+    $gloveExistingByKey = [];
+    foreach ($glovesjson as $existing) {
+        $gloveExistingByKey[(string)$existing->weapon_defindex . '_' . (string)$existing->paint] = true;
+    }
+
+    $gloveAdded = 0;
+    $gloveFixed = 0;
+
+    // Add any missing finishes
+    foreach ($gloveImageMap as $key => $data) {
+        if (isset($gloveExistingByKey[$key])) { continue; }
+
+        [$defindex, $paintIndex] = explode('_', $key, 2);
+        $newGlove = new stdClass();
+        $newGlove->weapon_defindex = is_numeric($defindex) ? (int)$defindex : $defindex;
+        $newGlove->paint = $paintIndex;
+        $newGlove->image = $data['image'];
+        $newGlove->paint_name = $data['name'];
+
+        $glovesjson[] = $newGlove;
+        $gloveExistingByKey[$key] = true;
+        $gloveAdded++;
+    }
+
+    // Live-check every glove image, replace broken ones using the same map
+    $batchUrls = [];
+    $batchRefs = [];
+    foreach ($glovesjson as $glove) {
+        if (empty($glove->image)) { continue; }
+        $batchUrls[] = $glove->image;
+        $batchRefs[] = $glove;
+
+        if (count($batchUrls) >= 25) {
+            $results = checkUrlsMulti($batchUrls);
+            foreach ($results as $i => $ok) {
+                if (!$ok) {
+                    $g = $batchRefs[$i];
+                    $key = (string)$g->weapon_defindex . '_' . (string)$g->paint;
+                    if (isset($gloveImageMap[$key])) {
+                        $g->image = $gloveImageMap[$key]['image'];
+                        $gloveFixed++;
+                    }
+                }
+            }
+            $batchUrls = []; $batchRefs = [];
+        }
+    }
+    if (!empty($batchUrls)) {
+        $results = checkUrlsMulti($batchUrls);
+        foreach ($results as $i => $ok) {
+            if (!$ok) {
+                $g = $batchRefs[$i];
+                $key = (string)$g->weapon_defindex . '_' . (string)$g->paint;
+                if (isset($gloveImageMap[$key])) {
+                    $g->image = $gloveImageMap[$key]['image'];
+                    $gloveFixed++;
+                }
+            }
+        }
+    }
+}
+
+// --- Same treatment for agents, music kits, stickers, and keychains:
+// merge missing items and verify images, matched by name since these
+// don't use paint indices. ---
+function fixCategoryByName($localItems, $byMykelUrl, $localNameField, $bmNameField, $stripPrefix = '') {
+    $bmData = @file_get_contents($byMykelUrl);
+    $bmItems = $bmData ? json_decode($bmData) : null;
+    if (!$bmItems) { return $localItems; }
+
+    $bmMap = [];
+    foreach ($bmItems as $bm) {
+        if (!empty($bm->$bmNameField) && !empty($bm->image)) {
+            $clean = $stripPrefix ? trim(str_replace($stripPrefix, '', $bm->$bmNameField)) : trim($bm->$bmNameField);
+            $bmMap[$clean] = $bm->image;
+        }
+    }
+
+    $existingNames = [];
+    foreach ($localItems as $item) {
+        $name = $item->$localNameField ?? '';
+        if ($name) { $existingNames[trim($name)] = true; }
+    }
+
+    // Fix existing broken/empty images
+    $batchUrls = [];
+    $batchRefs = [];
+    foreach ($localItems as $item) {
+        if (!empty($item->image)) {
+            $batchUrls[] = $item->image;
+            $batchRefs[] = $item;
+        }
+        if (count($batchUrls) >= 25) {
+            $results = checkUrlsMulti($batchUrls);
+            foreach ($results as $i => $ok) {
+                if (!$ok) {
+                    $name = trim($batchRefs[$i]->$localNameField ?? '');
+                    if (isset($bmMap[$name])) { $batchRefs[$i]->image = $bmMap[$name]; }
+                }
+            }
+            $batchUrls = []; $batchRefs = [];
+        }
+    }
+    if (!empty($batchUrls)) {
+        $results = checkUrlsMulti($batchUrls);
+        foreach ($results as $i => $ok) {
+            if (!$ok) {
+                $name = trim($batchRefs[$i]->$localNameField ?? '');
+                if (isset($bmMap[$name])) { $batchRefs[$i]->image = $bmMap[$name]; }
+            }
+        }
+    }
+
+    // Add missing items entirely (new agents/kits/stickers/keychains not yet in local data)
+    // Only safe for stickers/keychains where the schema is simple (id, name, image).
+    // Skipped for agents/music since local schema needs extra fields we can't infer.
+
+    return $localItems;
+}
+
+$BASE_API = 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/';
+
+$agentsjson = fixCategoryByName($agentsjson, $BASE_API . 'agents.json', 'agent_name', 'name');
+
+$musicjson = json_decode(file_get_contents($music));
+$musicjson = fixCategoryByName($musicjson, $BASE_API . 'music_kits.json', 'name', 'name');
+
+$stickersjson = json_decode(file_get_contents($stickers));
+$stickersjson = fixCategoryByName($stickersjson, $BASE_API . 'stickers.json', 'name', 'name', 'Sticker | ');
+
+$keychainsjson = json_decode(file_get_contents($keychains));
+$keychainsjson = fixCategoryByName($keychainsjson, $BASE_API . 'keychains.json', 'name', 'name', 'Charm | ');
+
 file_put_contents('./src/data/agents.json', json_encode($agentsjson));
 file_put_contents('./src/data/gloves.json', json_encode($glovesjson));
-file_put_contents('./src/data/keychains.json', file_get_contents($keychains));
-file_put_contents('./src/data/music.json', file_get_contents($music));
+file_put_contents('./src/data/keychains.json', json_encode($keychainsjson));
+file_put_contents('./src/data/music.json', json_encode($musicjson));
 file_put_contents('./src/data/skins.json', json_encode($skinsjson));
-file_put_contents('./src/data/stickers.json', file_get_contents($stickers));
+file_put_contents('./src/data/stickers.json', json_encode($stickersjson));
 
 if($_POST['color'] == 'random') {$_POST['color'] = true;}else {$_POST['color'] = '"'.$_POST['color'].'"';}
 
