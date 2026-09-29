@@ -38,7 +38,7 @@ $selectedpaint = 0;
 if(Path(2) != 'default') {$selectedpaint = Path(2);}
 
 $type = GetWeaponType(Path(1));
-if($type === 'knifes' && $selectedpaint === 0) {
+if(Path(1) === 'weapon_knife_default' && ($selectedpaint === 0 || $selectedpaint === '0')) {
     $query = $pdo->prepare("DELETE FROM `wp_player_knife` WHERE `steamid` = ?");
     $query->execute([$_SESSION['steamid']]);
 
