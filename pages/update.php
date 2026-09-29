@@ -132,6 +132,14 @@ switch($_POST['type']) {
                 $state = $pdo->prepare("INSERT INTO `wp_player_knife` VALUES(?,?,?)");
                 $state->execute([$_SESSION['steamid'], $_POST['team'], $_POST['name']]);
             }
+
+            // The "Default Knife" selection has no real numeric weapon_defindex
+            // (it's the synthetic entry with weapon_defindex = 'weapon_knife_default'),
+            // so there's nothing valid to store in wp_player_skins for it. The
+            // wp_player_knife write above already fully records this choice.
+            if(!is_numeric($_POST['index'])) {
+                return;
+            }
         }
 
         $state = $pdo->prepare("SELECT * FROM `wp_player_skins` WHERE `steamid` = ? AND `weapon_team` = ? AND `weapon_defindex` = ?");
